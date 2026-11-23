@@ -1,2 +1,16 @@
-idf_component_register(SRCS "main.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS
+        "main.c"
+        "src/entradas.c"
+        "src/servos.c"
+        "src/luces.c"
+        "src/odometro.c"
+        "src/lcd_16x2.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        esp_driver_gpio
+        esp_driver_ledc
+        esp_adc
+        nvs_flash
+)
