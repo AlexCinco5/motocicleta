@@ -3,6 +3,8 @@
 #include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 // Factor del divisor 100k / 22k: V_bat = V_adc * (122 / 22) = V_adc * 5.545
 #define DIVISOR_FACTOR          5.545f
@@ -10,9 +12,10 @@
 #define VOLTAJE_VACIA           6.5f   // 0 LEDs
 #define VOLTAJE_MEDIA           7.4f   // 2 LEDs
 #define VOLTAJE_LLENA           8.2f   // 3 LEDs
+#define MODO_PRUEBA_SIN_BATERIA 1
 
 static adc_oneshot_unit_handle_t adc1_handle;
-static bool prev_btn_ign = true;
+//static bool prev_btn_ign = true;
 static bool prev_btn_int = true;
 
 void entradas_init(void) {
@@ -49,15 +52,21 @@ void entradas_init(void) {
 }
 
 void entradas_leer(EstadoECU *est) {
-    // 1. Leer batería (promedio de 4 muestras para estabilidad)
-    int suma_bat = 0, raw_tmp = 0;
-    for (int i = 0; i < 4; i++) {
-        adc_oneshot_read(adc1_handle, ADC_CH_BATERIA, &raw_tmp);
-        suma_bat += raw_tmp;
-    }
-    float v_pin = ((suma_bat / 4.0f) / 4095.0f) * 3.3f;
-    est->voltaje_bateria = v_pin * DIVISOR_FACTOR;
 
+    #if MODO_PRUEBA_SIN_BATERIA
+    est->voltaje_bateria = 8.5f;
+    est->bateria_conectada = true;
+    est->nivel_bateria = 3;
+    #else
+        // 1. Leer batería (promedio de 4 muestras para estabilidad)
+        int suma_bat = 0, raw_tmp = 0;
+        for (int i = 0; i < 4; i++) {
+            adc_oneshot_read(adc1_handle, ADC_CH_BATERIA, &raw_tmp);
+            suma_bat += raw_tmp;
+        }
+        float v_pin = ((suma_bat / 4.0f) / 4095.0f) * 3.3f;
+        est->voltaje_bateria = v_pin * DIVISOR_FACTOR;
+    #endif
     // Si se desconecta la batería, apagar todo el sistema
     if (est->voltaje_bateria < VOLTAJE_DESCONECTADA) {
         est->bateria_conectada = false;
@@ -82,12 +91,21 @@ void entradas_leer(EstadoECU *est) {
         est->nivel_bateria = 3;
     }
 
-    // 2. Botón de ignición (flanco de bajada -> alterna ON/OFF)
-    bool btn_ign = gpio_get_level(PIN_BTN_IGNICION);
-    if (prev_btn_ign && !btn_ign) {
-        est->ignicion_activa = !est->ignicion_activa;
+  // 2. Switch de ignición (lectura directa con antirrebote: 0 = ON, 1 = OFF)
+    static bool ign_estable = false;
+    static bool ign_ultima = false;
+    static TickType_t ultimo_cambio_ign = 0;
+
+    bool ign_actual = (gpio_get_level(PIN_BTN_IGNICION) == 0);
+    TickType_t ahora = xTaskGetTickCount();
+
+    if (ign_actual != ign_ultima) {
+        ign_ultima = ign_actual;
+        ultimo_cambio_ign = ahora;
+    } else if ((ahora - ultimo_cambio_ign) >= pdMS_TO_TICKS(40)) {
+        ign_estable = ign_actual;
     }
-    prev_btn_ign = btn_ign;
+    est->ignicion_activa = ign_estable;
 
     // 3. Botón de intermitentes (flanco de bajada -> alterna ON/OFF)
     bool btn_int = gpio_get_level(PIN_BTN_INTERMIT);
@@ -96,15 +114,36 @@ void entradas_leer(EstadoECU *est) {
     }
     prev_btn_int = btn_int;
 
-    // 4. Switches de direccionales (activos en LOW por pull-up)
-    est->dir_izq_activa = (gpio_get_level(PIN_SW_DIR_IZQ) == 0);
-    est->dir_der_activa = (gpio_get_level(PIN_SW_DIR_DER) == 0);
+    // 4. Switches de direccionales (activos en LOW por pull-up externo, con antirrebote)
+    static bool izq_estable = false, izq_ultima = false;
+    static bool der_estable = false, der_ultima = false;
+    static TickType_t t_cambio_izq = 0, t_cambio_der = 0;
+
+    bool izq_actual = (gpio_get_level(PIN_SW_DIR_IZQ) == 0);
+    if (izq_actual != izq_ultima) {
+        izq_ultima = izq_actual;
+        t_cambio_izq = ahora;
+    } else if ((ahora - t_cambio_izq) >= pdMS_TO_TICKS(40)) {
+        izq_estable = izq_actual;
+    }
+
+    bool der_actual = (gpio_get_level(PIN_SW_DIR_DER) == 0);
+    if (der_actual != der_ultima) {
+        der_ultima = der_actual;
+        t_cambio_der = ahora;
+    } else if ((ahora - t_cambio_der) >= pdMS_TO_TICKS(40)) {
+        der_estable = der_actual;
+    }
+
+    est->dir_izq_activa = izq_estable;
+    est->dir_der_activa = der_estable;
 
     // 5. Potenciómetro acelerador
     int raw_acel = 0;
     adc_oneshot_read(adc1_handle, ADC_CH_ACELERADOR, &raw_acel);
     // Zona muerta pequeña abajo para asegurar detención limpia
     est->acelerador_raw = (raw_acel < 150) ? 0 : (uint16_t)raw_acel;
+    ESP_LOGI("POT", "acelerador_raw: %u", est->acelerador_raw);
 
 }
 

@@ -15,6 +15,12 @@ void luces_init(void) {
         .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&out_cfg);
+
+    gpio_set_level(PIN_LED_BAT_ROJO, 0);
+    gpio_set_level(PIN_LED_BAT_AMAR, 0);
+    gpio_set_level(PIN_LED_BAT_VERDE, 0);
+    gpio_set_level(PIN_LED_DIR_IZQ, 0);
+    gpio_set_level(PIN_LED_DIR_DER, 0);
 }
 
 void luces_actualizar(const EstadoECU *est) {
